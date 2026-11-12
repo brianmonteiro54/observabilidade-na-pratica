@@ -1,0 +1,117 @@
+# Stack completa de observabilidade no seu notebook.
+#
+#   docker compose up -d --build
+#   docker compose --profile carga up -d        # gera tráfego contínuo
+#
+#   Grafana ....... http://localhost:3000   (login automático como admin)
+#   Prometheus .... http://localhost:9090
+#   Collector ..... http://localhost:13133  (health)
+#   Aplicação ..... http://localhost:8080
+#
+# Versões fixadas e testadas nesta stack. Não troque por :latest sem testar:
+# o Tempo 3.0, por exemplo, mudou a arquitetura e passou a exigir Kafka,
+# o que quebra uma instalação de um binário só como esta.
+name: observabilidade-na-pratica
+
+services:
+  # ---------------------------------------------------------------- aplicação
+  checkout:
+    build: ./app
+    ports: ["8080:8080"]
+    environment:
+      OTEL_SERVICE_NAME: checkout
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=lab,service.version=1.0.0
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+      OTEL_LOGS_EXPORTER: none          # o log sai em arquivo, lido pelo filelog
+      # faz o SDK usar os nomes estáveis da convenção HTTP
+      # (http.server.request.duration em segundos)
+      OTEL_SEMCONV_STABILITY_OPT_IN: http
+      OTEL_METRIC_EXPORT_INTERVAL: "10000"
+      FAIL_RATE: "0"
+    volumes:
+      - applogs:/var/log/app
+    depends_on: [otel-collector]
+
+  # ---------------------------------------------------------------- coleta
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.165.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./config/otel-collector.yaml:/etc/otel/config.yaml:ro
+      - applogs:/var/log/app:ro
+    ports:
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+      - "8888:8888"     # métricas do próprio Collector
+      - "13133:13133"   # health
+    depends_on: [prometheus, loki, tempo]
+
+  # ---------------------------------------------------------------- métricas
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-remote-write-receiver   # recebe do Collector e do Tempo
+      - --enable-feature=exemplar-storage    # guarda o trace_id de amostras
+      - --storage.tsdb.retention.time=12h
+      - --web.enable-lifecycle
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+
+  # ---------------------------------------------------------------- logs
+  loki:
+    image: grafana/loki:3.7.9
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./config/loki.yaml:/etc/loki/config.yaml:ro
+    ports: ["3100:3100"]
+
+  # ---------------------------------------------------------------- traces
+  tempo:
+    image: grafana/tempo:2.8.2
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    volumes:
+      - ./config/tempo.yaml:/etc/tempo/config.yaml:ro
+    ports: ["3200:3200"]     # 4317/4318 ficam internos: quem publica é o Collector
+
+  # ---------------------------------------------------------------- visualização
+  grafana:
+    image: grafana/grafana:13.3.1
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./config/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./config/grafana/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus, loki, tempo]
+
+  # ---------------------------------------------------------------- gerador de carga
+  # docker compose --profile carga up -d
+  carga:
+    image: curlimages/curl:8.11.1
+    profiles: [carga]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          for i in $$(seq 1 5); do
+            curl -s -o /dev/null -X POST http://checkout:8080/finalizar \
+              -H 'content-type: application/json' \
+              -d "{\"id\":\"ped-$$RANDOM\",\"itens\":[\"a\",\"b\"]}"
+          done
+          sleep 1
+        done
+    depends_on: [checkout]
+
+volumes:
+  applogs:

@@ -1,0 +1,65 @@
+# É AQUI que a correlação entre os três sinais é configurada.
+# Sem este arquivo, Grafana mostra três ferramentas lado a lado — e nada se liga.
+apiVersion: 1
+
+datasources:
+  # ------------------------------------------------------------- métricas
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+      # clicar no exemplar do gráfico abre o trace daquela requisição
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+          urlDisplayLabel: Ver trace
+
+  # ------------------------------------------------------------- logs
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # extrai o trace_id da linha de log e cria um link para o Tempo
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"trace_id":\s*"(\w+)"'
+          url: '${__value.raw}'
+          datasourceUid: tempo
+          urlDisplayLabel: Abrir trace
+
+  # ------------------------------------------------------------- traces
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # do span para o log: filtra o Loki pelo trace_id
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        filterByTraceID: true
+        filterBySpanID: false
+      # do span para a métrica do serviço
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        tags:
+          - key: service.name
+            value: service_name
+      # mapa de serviços, a partir das métricas geradas pelo Tempo
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      streamingEnabled:
+        search: true

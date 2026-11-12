@@ -1,0 +1,15 @@
+# Carrega automaticamente todo JSON que estiver em /var/lib/grafana/dashboards.
+# Dashboard como código: o painel sobe junto com o ambiente, versionado no Git.
+apiVersion: 1
+
+providers:
+  - name: observabilidade-na-pratica
+    orgId: 1
+    folder: Aula
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

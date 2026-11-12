@@ -1,0 +1,36 @@
+# Tempo em processo único.
+#
+#   helm upgrade --install tempo grafana/tempo -n observability -f 04-tempo.values.yaml
+#
+# O metrics-generator deriva RED e o mapa de serviços a partir dos spans e
+# escreve no Prometheus. É o que preenche o Service Map do Grafana.
+
+tempo:
+  retention: 48h
+
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  metricsGenerator:
+    enabled: true
+    remoteWriteUrl: http://kube-prometheus-stack-prometheus.observability.svc:9090/api/v1/write
+
+  resources:
+    requests: { cpu: 200m, memory: 512Mi }
+    limits: { memory: 1Gi }
+
+persistence:
+  enabled: true
+  size: 20Gi
+
+serviceMonitor:
+  enabled: true
+
+# Se o mapa de serviços ficar vazio, confirme quais processors o chart habilitou:
+#   kubectl -n observability get cm tempo -o yaml | grep -A5 metrics_generator
+# Os necessários são: service-graphs e span-metrics.

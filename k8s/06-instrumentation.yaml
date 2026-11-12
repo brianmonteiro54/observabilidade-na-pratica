@@ -1,0 +1,52 @@
+# Instrumentação automática pelo OpenTelemetry Operator.
+#
+# Para usar, anote o Deployment da aplicação:
+#   annotations:
+#     instrumentation.opentelemetry.io/inject-python: "loja/padrao"
+#
+# Funciona bem em Python, Node, Java e .NET.
+# Em Go, instrumente pelo SDK: a injeção automática usa eBPF e exige privilégios.
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: padrao
+  namespace: loja
+spec:
+  exporter:
+    # envia para o agent do próprio nó
+    endpoint: http://$(NODE_IP):4318
+
+  propagators:
+    - tracecontext      # padrão W3C
+    - baggage
+
+  sampler:
+    # a decisão fina fica no tail sampling do gateway
+    type: parentbased_traceidratio
+    argument: "1.0"
+
+  resource:
+    addK8sUIDAttributes: true
+    resourceAttributes:
+      deployment.environment: prod
+
+  env:
+    - name: NODE_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.hostIP
+    # usa os nomes estáveis da convenção HTTP
+    - name: OTEL_SEMCONV_STABILITY_OPT_IN
+      value: http
+
+  python:
+    env:
+      # injeta trace_id e span_id nas linhas de log: é o que liga Loki e Tempo
+      - name: OTEL_PYTHON_LOG_CORRELATION
+        value: "true"
+      - name: OTEL_METRICS_EXPORTER
+        value: otlp
+
+  nodejs: {}
+
+  java: {}

@@ -1,0 +1,80 @@
+# Scrape de uma aplicação que expõe /metrics por conta própria.
+# Quem envia métrica por OTLP não precisa disto: o Collector empurra para o Prometheus.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: checkout
+  namespace: loja
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: checkout
+  namespaceSelector:
+    matchNames: [loja]
+  endpoints:
+    - port: metrics          # NOME da porta no Service, não o número
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      metricRelabelings:
+        # corta ruído do runtime antes de armazenar: cardinalidade é orçamento
+        - action: drop
+          sourceLabels: [__name__]
+          regex: 'go_gc_duration_seconds.*|go_memstats_.*|promhttp_.*'
+---
+# Alertas essenciais sobre o que o usuário sente.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: loja-essencial
+  namespace: observability
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: loja.essencial
+      interval: 30s
+      rules:
+        # pré-cálculo: deixa o alerta legível e o painel leve
+        - record: slo:checkout_error_ratio:rate5m
+          expr: |
+            sum(rate(http_server_request_duration_seconds_count{service_name="checkout",http_response_status_code=~"5.."}[5m]))
+            /
+            sum(rate(http_server_request_duration_seconds_count{service_name="checkout"}[5m]))
+
+        - alert: CheckoutTaxaDeErroAlta
+          expr: slo:checkout_error_ratio:rate5m > 0.05
+          for: 2m
+          labels:
+            severity: critical
+            service: checkout
+            team: plataforma
+          annotations:
+            summary: 'checkout com {{ $value | humanizePercentage }} de respostas 5xx'
+            runbook_url: https://github.com/SEU-USUARIO/SEU-REPO/blob/main/RUNBOOK.md
+
+        - alert: CheckoutLatenciaAlta
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(http_server_request_duration_seconds_bucket{service_name="checkout"}[5m]))
+            ) > 0.3
+          for: 5m
+          labels:
+            severity: warning
+            service: checkout
+            team: plataforma
+          annotations:
+            summary: 'p95 do checkout em {{ $value | humanizeDuration }} (limite 300 ms)'
+
+        # a stack de observabilidade também precisa ser observada
+        - alert: CollectorPerdendoTelemetria
+          expr: sum(rate(otelcol_exporter_send_failed_spans_total[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: otel-collector
+            team: plataforma
+          annotations:
+            summary: 'Collector falhando ao exportar spans: telemetria sendo perdida'

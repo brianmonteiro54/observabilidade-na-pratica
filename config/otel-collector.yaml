@@ -1,0 +1,103 @@
+# OTel Collector do laboratório: recebe os três sinais e roteia cada um para o seu backend.
+#
+#   traces   → Tempo
+#   métricas → Prometheus (remote write)
+#   logs     → Loki (OTLP nativo)
+
+receivers:
+  # a aplicação envia traces e métricas por aqui
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # os logs são lidos do arquivo que a aplicação escreve no volume compartilhado
+  filelog:
+    include: [/var/log/app/*.log]
+    start_at: beginning
+    operators:
+      # extrai os campos do JSON para atributos, mantendo a linha original no body
+      - type: json_parser
+        parse_from: body
+        parse_to: attributes
+      # service vira atributo de recurso: no Loki isso se torna o label service_name
+      - type: move
+        from: attributes.service
+        to: resource["service.name"]
+      # level vira a severidade do registro
+      - type: severity_parser
+        parse_from: attributes.level
+
+processors:
+  # 1º · protege o processo antes de qualquer coisa
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+
+  # 2º · marca o ambiente em todos os sinais
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: lab
+        action: upsert
+
+  # último · agrupa para a saída
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    # transforma atributos de recurso (service.name etc.) em labels da métrica
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # ligue para ver a telemetria chegando; desligue depois
+  debug:
+    verbosity: normal
+    sampling_initial: 2
+    sampling_thereafter: 200
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp/tempo, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [filelog]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp/loki]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888

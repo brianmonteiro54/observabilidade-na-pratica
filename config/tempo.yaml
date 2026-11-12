@@ -1,0 +1,55 @@
+# Tempo local: armazena os traces em disco, sem índice e sem banco auxiliar.
+# O metrics-generator deriva RED e o mapa de serviços a partir dos spans
+# e escreve no Prometheus — por isso você ganha o dashboard "de graça".
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 24h
+
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
+  traces_storage:
+    path: /var/tempo/generator/traces
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors:
+        - service-graphs    # alimenta o mapa de serviços no Grafana
+        - span-metrics      # gera taxa, erro e latência a partir dos spans
+        - local-blocks      # habilita consultas de métricas sobre traces
+
+usage_report:
+  reporting_enabled: false

@@ -1,0 +1,63 @@
+# Loki em processo único: suficiente para laboratório e demonstração.
+# Em produção, use o modo distribuído com armazenamento de objetos (S3).
+#
+#   helm upgrade --install loki grafana/loki -n observability -f 03-loki.values.yaml
+
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false
+
+  commonConfig:
+    replication_factor: 1
+
+  storage:
+    type: filesystem
+
+  # obrigatório declarar: v13 com TSDB é o esquema que suporta metadado estruturado
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+
+  limits_config:
+    allow_structured_metadata: true   # necessário para ingestão OTLP
+    volume_enabled: true
+    retention_period: 168h            # 7 dias
+    ingestion_rate_mb: 10
+    ingestion_burst_size_mb: 20
+
+  compactor:
+    retention_enabled: true
+    delete_request_store: filesystem
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 20Gi
+  resources:
+    requests: { cpu: 200m, memory: 512Mi }
+    limits: { memory: 1Gi }
+
+# o gateway expõe /otlp/v1/logs, usado pelo exporter otlphttp do Collector
+gateway:
+  enabled: true
+
+# desliga o que o modo single binary não usa
+read: { replicas: 0 }
+write: { replicas: 0 }
+backend: { replicas: 0 }
+chunksCache: { enabled: false }
+resultsCache: { enabled: false }
+lokiCanary: { enabled: false }
+test: { enabled: false }
+
+monitoring:
+  serviceMonitor:
+    enabled: true

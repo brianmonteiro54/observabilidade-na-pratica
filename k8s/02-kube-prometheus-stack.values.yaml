@@ -1,0 +1,113 @@
+# kube-prometheus-stack: Prometheus, Alertmanager, Grafana, node-exporter e kube-state-metrics.
+#
+#   helm upgrade --install kube-prometheus-stack \
+#     prometheus-community/kube-prometheus-stack \
+#     -n observability -f 02-kube-prometheus-stack.values.yaml
+#
+# Chaves de chart mudam entre versões: confirme com
+#   helm show values prometheus-community/kube-prometheus-stack | less
+
+fullnameOverride: kube-prometheus-stack
+
+prometheus:
+  prometheusSpec:
+    # Sem isto, o Operator só enxerga ServiceMonitor e PrometheusRule que tenham
+    # o label release=<nome do release>. Com false, ele considera todos.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+    retention: 15d
+    retentionSize: 20GiB
+    scrapeInterval: 30s
+
+    # exemplars: liga o ponto do gráfico ao trace daquela requisição
+    enableFeatures:
+      - exemplar-storage
+    # recebe métricas empurradas pelo Collector e pelo Tempo
+    enableRemoteWriteReceiver: true
+
+    resources:
+      requests: { cpu: 300m, memory: 1Gi }
+      limits: { memory: 2Gi }
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 25Gi
+
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { memory: 256Mi }
+
+grafana:
+  adminPassword: ""        # o chart gera e guarda no Secret
+  defaultDashboardsTimezone: America/Sao_Paulo
+
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard    # ConfigMap com este label é importado sozinho
+      searchNamespace: ALL
+
+  # é aqui que a correlação entre os três sinais é configurada
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      uid: loki
+      access: proxy
+      url: http://loki-gateway.observability.svc.cluster.local
+      jsonData:
+        derivedFields:
+          - name: TraceID
+            matcherRegex: '"trace_id":\s*"(\w+)"'
+            url: '${__value.raw}'
+            datasourceUid: tempo
+            urlDisplayLabel: Abrir trace
+
+    - name: Tempo
+      type: tempo
+      uid: tempo
+      access: proxy
+      url: http://tempo.observability.svc.cluster.local:3200
+      jsonData:
+        tracesToLogsV2:
+          datasourceUid: loki
+          spanStartTimeShift: -5m
+          spanEndTimeShift: 5m
+          filterByTraceID: true
+        tracesToMetrics:
+          datasourceUid: prometheus
+          tags:
+            - key: service.name
+              value: service_name
+        serviceMap:
+          datasourceUid: prometheus
+        nodeGraph:
+          enabled: true
+
+  grafana.ini:
+    users:
+      default_theme: dark
+
+# uso de recursos do cluster
+nodeExporter:
+  enabled: true
+kube-state-metrics:
+  enabled: true
+
+# em cluster gerenciado (EKS, GKE, AKS) o control plane não é exposto para scrape
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
